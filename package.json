@@ -1,0 +1,9 @@
+{
+  "name": "rakuten-proxy",
+  "version": "1.0.0",
+  "description": "Vercel Serverless proxy for Rakuten Ichiba Item Search API",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  }
+}
