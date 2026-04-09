@@ -9,7 +9,7 @@ import json
 import os
 
 RAKUTEN_API_URL = 'https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20220601'
-REFERER_URL = 'https://script.google.com'
+REFERER_URL = 'https://script.google.com/'
 
 
 class handler(BaseHTTPRequestHandler):
@@ -38,6 +38,7 @@ class handler(BaseHTTPRequestHandler):
             access_key = params.get('accessKey', [None])[0]
             debug = params.get('debug', [None])[0]
             token = params.get('token', [None])[0]
+            referer_override = params.get('referer', [None])[0]
 
             expected_token = os.environ.get('RAKUTEN_PROXY_TOKEN')
             if expected_token:
@@ -45,13 +46,16 @@ class handler(BaseHTTPRequestHandler):
                 if auth_token != expected_token:
                     return self._send_json(401, {'error': 'Unauthorized'})
 
+            effective_referer = referer_override or REFERER_URL
+
             if debug == '1':
                 debug_req = Request(
                     'https://httpbin.org/headers',
                     headers={
                         'Accept': 'application/json',
-                        'Referer': REFERER_URL,
-                        'User-Agent': 'rakuten-proxy-vercel-python',
+                        'Referer': effective_referer,
+                        'Origin': effective_referer.rstrip('/'),
+                        'User-Agent': 'Mozilla/5.0 (compatible; rakuten-proxy-python)',
                     }
                 )
                 with urlopen(debug_req, timeout=30) as resp:
@@ -80,8 +84,9 @@ class handler(BaseHTTPRequestHandler):
                 target_url,
                 headers={
                     'Accept': 'application/json',
-                    'Referer': REFERER_URL,
-                    'User-Agent': 'Mozilla/5.0 rakuten-proxy-python',
+                    'Referer': effective_referer,
+                    'Origin': effective_referer.rstrip('/'),
+                    'User-Agent': 'Mozilla/5.0 (compatible; rakuten-proxy-python)',
                     'accessKey': access_key,
                 }
             )
@@ -93,6 +98,7 @@ class handler(BaseHTTPRequestHandler):
                     self.send_header('Content-Type', 'application/json; charset=utf-8')
                     self.send_header('Access-Control-Allow-Origin', '*')
                     self.send_header('X-Upstream-Status', str(resp.status))
+                    self.send_header('X-Debug-Referer', effective_referer)
                     self.end_headers()
                     self.wfile.write(body)
             except HTTPError as http_err:
@@ -101,6 +107,7 @@ class handler(BaseHTTPRequestHandler):
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.send_header('X-Upstream-Status', str(http_err.code))
+                self.send_header('X-Debug-Referer', effective_referer)
                 self.end_headers()
                 self.wfile.write(body)
         except Exception as e:
