@@ -1,24 +1,25 @@
 /**
  * Vercel Serverless Function: 楽天商品検索API プロキシ
  *
- * 配置場所: api/rakuten.js （ec-checkリポジトリのapi/ディレクトリ直下）
- * URL: https://ec-check.vercel.app/api/rakuten
+ * 配置場所: api/rakuten.js
+ * URL: https://rakuten-proxy-beta.vercel.app/api/rakuten
  *
  * GASから呼ばれ、Refererヘッダーを注入して楽天新APIにアクセス
- * （GASとCloudflare Workersは Refererヘッダーを送れないためプロキシが必要）
+ * （GAS/Cloudflare Workers/Node.js fetch は仕様上 Referer ヘッダー設定不可のため
+ *  Node.js の https モジュールを直接使用する）
  *
  * 使い方:
- *   GET https://ec-check.vercel.app/api/rakuten?itemCode=shop:item&applicationId=uuid&accessKey=pk_...
- *
- * 環境変数（任意、Vercelダッシュボードで設定）:
- *   RAKUTEN_PROXY_TOKEN: 認証用シークレットトークン（X-Auth-Tokenヘッダー or ?token=クエリ）
+ *   GET https://rakuten-proxy-beta.vercel.app/api/rakuten?itemCode=shop:item&applicationId=uuid&accessKey=pk_...
  */
 
-const RAKUTEN_API_URL = 'https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20220601';
+const https = require('https');
+
+const RAKUTEN_API_HOST = 'openapi.rakuten.co.jp';
+const RAKUTEN_API_PATH = '/ichibams/api/IchibaItem/Search/20220601';
 const REFERER_URL = 'https://script.google.com';
 
-export default async function handler(req, res) {
-  // CORS ヘッダーを常に設定
+module.exports = async function handler(req, res) {
+  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Auth-Token');
@@ -31,7 +32,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  // 認証チェック（環境変数 RAKUTEN_PROXY_TOKEN が設定されている場合のみ）
+  // 認証チェック
   const expectedToken = process.env.RAKUTEN_PROXY_TOKEN;
   if (expectedToken) {
     const authToken = req.headers['x-auth-token'] || req.query.token || '';
@@ -49,29 +50,46 @@ export default async function handler(req, res) {
     });
   }
 
-  // 楽天新APIにリクエスト（Node.jsのfetchはRefererヘッダーを自由に設定可能）
-  const rakutenUrl = new URL(RAKUTEN_API_URL);
-  rakutenUrl.searchParams.set('format', 'json');
-  rakutenUrl.searchParams.set('itemCode', itemCode);
-  rakutenUrl.searchParams.set('applicationId', applicationId);
+  // クエリパラメータを組み立て
+  const params = new URLSearchParams();
+  params.set('format', 'json');
+  params.set('itemCode', itemCode);
+  params.set('applicationId', applicationId);
+  const queryString = params.toString();
+
+  // Node.js の https.request を使用（fetch と違い forbidden header 制約なし）
+  const options = {
+    hostname: RAKUTEN_API_HOST,
+    port: 443,
+    path: RAKUTEN_API_PATH + '?' + queryString,
+    method: 'GET',
+    headers: {
+      'Accept': 'application/json',
+      'Referer': REFERER_URL,
+      'User-Agent': 'Mozilla/5.0 rakuten-proxy-vercel',
+      'accessKey': accessKey,
+    },
+  };
 
   try {
-    const response = await fetch(rakutenUrl.toString(), {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json',
-        'Referer': REFERER_URL,
-        'User-Agent': 'Mozilla/5.0 rakuten-proxy-vercel',
-        'accessKey': accessKey,
-      },
+    const { statusCode, body } = await new Promise((resolve, reject) => {
+      const request = https.request(options, (response) => {
+        let data = '';
+        response.on('data', (chunk) => { data += chunk; });
+        response.on('end', () => {
+          resolve({ statusCode: response.statusCode, body: data });
+        });
+      });
+      request.on('error', reject);
+      request.setTimeout(30000, () => {
+        request.destroy(new Error('Request timeout'));
+      });
+      request.end();
     });
 
-    const body = await response.text();
-
-    // Rakutenレスポンスをそのまま返送
-    res.status(response.status);
+    res.status(statusCode);
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.setHeader('X-Upstream-Status', String(response.status));
+    res.setHeader('X-Upstream-Status', String(statusCode));
     return res.send(body);
   } catch (err) {
     return res.status(502).json({
@@ -79,4 +97,4 @@ export default async function handler(req, res) {
       message: err.message,
     });
   }
-}
+};
